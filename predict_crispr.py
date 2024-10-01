@@ -17,7 +17,14 @@ def main():
     parser.add_argument("--model", choices=['linear', 'random_forest'], default='random_forest', help="Type of regression model to use.")
     parser.add_argument("--test_size", type=float, default=0.2, help="Proportion of the dataset to include in the test split.")
     parser.add_argument("--output_folder", default="model_output", help="Folder to save model outputs and results.")
-    parser.add_argument("--target_variable", choices=['num_crispr_arrays', 'average_crispr_length', 'average_AT'], 
+    parser.add_argument("--target_variable", choices=['num_crispr_arrays', 'average_crispr_length', 'average_AT', 
+                                                      'percent_plus_orientation', 'percent_minus_orientation',
+                                                      'average_DR_length', 'sd_DR_length', 'average_spacers',
+                                                      'sd_spacers', 'average_array_length', 'sd_array_length',
+                                                      'average_conservation_DRs', 'sd_conservation_DRs',
+                                                      'average_conservation_spacers', 'sd_conservation_spacers',
+                                                      'most_common_DR_consensus', 'leftflank_kmer_freq',
+                                                      'rightflank_kmer_freq'],
                         default='num_crispr_arrays', help="Target variable to predict.")
     args = parser.parse_args()
 
@@ -84,8 +91,16 @@ def main():
     # Prepare the features and target
     y = merged_df[args.target_variable]
     X = merged_df.drop(columns=[
-        'sample', 'Fasta file', 'num_crispr_arrays', 'average_crispr_length', 'average_AT',
-        'percent_plus_orientation', 'percent_minus_orientation', 'Genus'
+        'sample', 'Fasta file', 'Genus',
+        # Remove all potential target variables
+        'num_crispr_arrays', 'average_crispr_length', 'average_AT', 
+        'percent_plus_orientation', 'percent_minus_orientation',
+        'average_DR_length', 'sd_DR_length', 'average_spacers',
+        'sd_spacers', 'average_array_length', 'sd_array_length',
+        'average_conservation_DRs', 'sd_conservation_DRs',
+        'average_conservation_spacers', 'sd_conservation_spacers',
+        'most_common_DR_consensus', 'leftflank_kmer_freq',
+        'rightflank_kmer_freq'
     ])
 
     # Handle categorical variables using one-hot encoding
