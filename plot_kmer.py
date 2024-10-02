@@ -15,6 +15,7 @@ from collections import defaultdict
 import logging
 from sklearn.manifold import TSNE
 from collections import Counter
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor, plot_tree, export_text
 
 def safe_json_loads(json_str):
     try:
@@ -732,9 +733,7 @@ def main():
     data_columns = {
         'left_kmer': 'Left Flank k-mer',
         'right_kmer': 'Right Flank k-mer',
-        'spacer_kmer': 'Spacer k-mer',
-        'spacer_nuc': 'Spacer Nucleotide',
-        'dr_nuc': 'DR Nucleotide'
+        'spacer_kmer': 'Spacer k-mer'
     }
 
     # Define t-SNE parameters
@@ -774,7 +773,10 @@ def main():
         logging.info(f"Feature matrix shape: {feature_matrix.shape}")
 
         # Define categorical and numerical hues
-        categorical_hues = ['Phylum', 'Class', 'Order', 'Family', 'Genus']
+        categorical_hues = ['Motility', 'Gram staining', 'Aerophilicity', 'Extreme environment tolerance',
+                            'Biofilm formation', 'Animal pathogenicity', 'Biosafety level',
+                            'Health association', 'Host association', 'Plant pathogenicity',
+                            'Spore formation', 'Hemolysis', 'Cell shape', 'Phylum', 'Class', 'Order', 'Family', 'Genus']
         numerical_hues = ['num_crispr_arrays', 'average_crispr_length', 'average_DR_length', 'average_spacers']
 
         # Generate UMAP plots
