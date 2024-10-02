@@ -3,11 +3,41 @@ import numpy as np
 import argparse
 import os
 import json
+import sys  # Ensure sys is imported
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 import umap.umap_ as umap
 from collections import defaultdict
+import logging
+
+def bin_numerical_attribute(df, column, bins=5):
+    """
+    Bin a numerical column into quantile-based categories with range labels.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing the column.
+        column (str): The name of the numerical column to bin.
+        bins (int): Number of quantile-based bins.
+
+    Returns:
+        pd.Series: A categorical series with binned categories labeled as "start-end".
+    """
+    try:
+        bin_details = pd.qcut(df[column], q=bins, duplicates='drop', retbins=True)
+        binned = bin_details[0]
+        bin_edges = bin_details[1]
+
+        # Create custom labels based on bin edges
+        labels = [f"{round(bin_edges[i], 2)}-{round(bin_edges[i+1], 2)}" for i in range(len(bin_edges)-1)]
+        binned = pd.cut(df[column], bins=bin_edges, labels=labels, include_lowest=True)
+
+        return binned
+    except ValueError as e:
+        logging.error(f"Error binning column '{column}': {e}")
+        # Fallback to generic labels if binning fails
+        labels = [f"Bin{i}" for i in range(1, bins + 1)]
+        return pd.qcut(df[column], q=bins, labels=labels, duplicates='drop')
 
 def get_kmer_frequencies(kmer_dict, k_sizes):
     """
@@ -30,55 +60,53 @@ def get_kmer_frequencies(kmer_dict, k_sizes):
 
 def flatten_kmer_dict(kmer_dict, k_sizes):
     """
-    Flatten a nested kmer_dict containing multiple k-mer sizes into a single dict.
-    Each key is the k-mer itself if its size matches the desired k sizes.
+    Flatten nested k-mer dictionaries into a single dictionary.
 
     Args:
-        kmer_dict (dict): Nested kmer dict e.g., {'2-mer': {'CG': 4.1, ...}, '3-mer': {...}}
-        k_sizes (list): List of k-mer sizes to include.
+        kmer_dict (dict): Nested dictionary containing k-mer frequencies.
+        k_sizes (list): List of desired k-mer sizes.
 
     Returns:
-        dict: Flattened k-mer frequencies for the specified sizes.
+        dict: Flattened dictionary with k-mer frequencies.
     """
-    flat_kmer_freqs = {}
-    for k in k_sizes:
-        key = f"{k}-mer"
-        if key in kmer_dict:
-            for kmer, freq in kmer_dict[key].items():
-                flat_kmer_freqs[kmer] = flat_kmer_freqs.get(kmer, 0.0) + freq
-    return flat_kmer_freqs
+    return get_kmer_frequencies(kmer_dict, k_sizes)
 
-def kmer_dict_to_vector(kmer_freqs, all_kmers):
+def kmer_dict_to_vector(kmer_dict, all_kmers):
     """
-    Convert a k-mer frequency dictionary to a vector based on all_kmers.
+    Convert a k-mer frequency dictionary to a vector based on a list of all possible k-mers.
 
     Args:
-        kmer_freqs (dict): Dictionary of k-mer frequencies.
-        all_kmers (list): List of all unique k-mers.
+        kmer_dict (dict): Dictionary containing k-mer frequencies.
+        all_kmers (list): List of all possible k-mers.
 
     Returns:
-        list: List of frequencies ordered according to all_kmers.
+        list: Frequency vector corresponding to all_kmers.
     """
-    return [kmer_freqs.get(kmer, 0.0) for kmer in all_kmers]
+    return [kmer_dict.get(kmer, 0.0) for kmer in all_kmers]
 
-def parse_json_column(df, column_name):
+def safe_json_loads(x):
     """
-    Parse a JSON column into dictionaries.
+    Safely parse a JSON string or return the dict if already parsed.
 
     Args:
-        df (pd.DataFrame): The DataFrame containing the column.
-        column_name (str): The name of the column to parse.
+        x: The object to parse.
 
     Returns:
-        pd.Series: A pandas Series of dictionaries.
+        dict or original object if parsing fails.
     """
-    try:
-        return df[column_name].apply(json.loads)
-    except json.JSONDecodeError as e:
-        print(f"Error parsing JSON in column '{column_name}': {e}")
-        sys.exit(1)
+    if isinstance(x, str):
+        try:
+            return json.loads(x)
+        except json.JSONDecodeError:
+            logging.error(f"JSONDecodeError for value: {x}")
+            return {}
+    elif isinstance(x, dict):
+        return x
+    else:
+        logging.error(f"Unexpected type {type(x)} for value: {x}")
+        return {}
 
-def generate_umap_plot(feature_matrix, metadata, hue, output_path):
+def generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='categorical', log_scale=False, palette=None):
     """
     Perform UMAP dimensionality reduction and generate a scatter plot.
 
@@ -87,19 +115,24 @@ def generate_umap_plot(feature_matrix, metadata, hue, output_path):
         metadata (pd.Series): Metadata column for coloring.
         hue (str): The name of the metadata column.
         output_path (str): Path to save the plot.
+        hue_type (str): Type of hue ('categorical' or 'numerical').
+        log_scale (bool): Whether to apply log scaling to numerical hues.
+        palette (list or seaborn palette, optional): Color palette for categorical hues.
     """
+    logging.info(f"Generating UMAP plot for hue '{hue}' with type '{hue_type}' and log_scale={log_scale}.")
+
     # Standardize features
     scaler = StandardScaler()
     feature_matrix_scaled = scaler.fit_transform(feature_matrix)
 
     # Apply UMAP
-    try:
-        reducer = umap.UMAP(random_state=42)
-        embedding = reducer.fit_transform(feature_matrix_scaled)
-        print(f"UMAP embedding shape for '{hue}': {embedding.shape}")
-    except Exception as e:
-        print(f"Error during UMAP embedding for '{hue}': {e}")
-        return
+    reducer = umap.UMAP(random_state=42)
+    embedding = reducer.fit_transform(feature_matrix_scaled)
+    logging.info(f"UMAP embedding shape for '{hue}': {embedding.shape}")
+
+    # Handle log scaling for numerical hues
+    if hue_type == 'numerical' and log_scale:
+        metadata = metadata.apply(lambda x: np.log1p(x))  # Apply log1p to handle zero values
 
     # Create a DataFrame for plotting
     plot_df = pd.DataFrame({
@@ -108,169 +141,277 @@ def generate_umap_plot(feature_matrix, metadata, hue, output_path):
         'Hue': metadata
     })
 
-    # Check if hue has more than a certain number of categories to adjust palette
-    unique_values = metadata.unique()
-    if len(unique_values) > 10:
-        palette = 'viridis'
-    else:
-        palette = 'tab10'
-
-    # Plotting with dynamic palette
     plt.figure(figsize=(12, 10))
-    sns.scatterplot(
-        x='UMAP1', y='UMAP2',
-        hue='Hue',
-        data=plot_df,
-        palette=palette,
-        s=80,
-        edgecolor='k',
-        alpha=0.7
-    )
-    plt.title(f"UMAP Colored by {hue}")
-    plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
+
+    if hue_type == 'categorical':
+        # Ensure 'Hue' is category dtype
+        if not pd.api.types.is_categorical_dtype(plot_df['Hue']):
+            plot_df['Hue'] = plot_df['Hue'].astype('category')
+
+        plt.title(f"UMAP Colored by {hue}")
+
+        sns.scatterplot(
+            x='UMAP1', y='UMAP2',
+            hue='Hue',
+            data=plot_df,
+            palette=palette,
+            s=80,
+            edgecolor='k',
+            alpha=0.7
+        )
+
+        plt.legend(title=hue, bbox_to_anchor=(1.05, 1), loc='upper left')
+    
+    elif hue_type == 'numerical':
+        plt.title(f"UMAP Colored by {'Log-scaled ' if log_scale else ''}{hue}")
+
+        scatter = plt.scatter(
+            plot_df['UMAP1'],
+            plot_df['UMAP2'],
+            c=plot_df['Hue'],
+            cmap='viridis',
+            s=80,
+            edgecolor='k',
+            alpha=0.7
+        )
+
+        cbar = plt.colorbar(scatter)
+        if log_scale:
+            cbar.set_label(f'Log of {hue}')
+        else:
+            cbar.set_label(hue)
+    else:
+        logging.error("hue_type must be 'categorical' or 'numerical'.")
+        raise ValueError("hue_type must be 'categorical' or 'numerical'.")
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
-    print(f"Plot saved to {output_path}")
+    logging.info(f"Plot saved to {output_path}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Plot various frequency distributions using UMAP.")
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+
+    parser = argparse.ArgumentParser(description="Plot k-mer content using UMAP and perform classification.")
     parser.add_argument("--summary_table", required=True, help="Path to the summary table CSV (e.g., summary_table3.csv).")
     parser.add_argument("--metadata_table", required=True, help="Path to the metadata CSV file (e.g., limited.csv).")
     parser.add_argument("--taxa_table", required=True, help="Path to the taxa CSV file (e.g., taxa.csv).")
     parser.add_argument("--output_folder", default="kmer_plots2", help="Folder to save plots and results.")
     parser.add_argument("--kmer_sizes", type=int, nargs='+', default=[3, 5], help="Sizes of the k-mers to plot. Default is [3, 5].")
+    parser.add_argument("--num_bins", type=int, default=5, help="Number of bins for quantile-based binning of numerical attributes. Default is 5.")
+    parser.add_argument("--top_taxa", type=int, default=6, help="Number of top categories to display for each taxonomic level. Default is 6.")
+    parser.add_argument("--top_taxa_count", type=int, nargs='*', default=[], help="Number of top categories for each taxonomic level in the order: Phylum, Class, Order, Family, Genus. If not specified, --top_taxa is used for all.")
     args = parser.parse_args()
+
+    logging.info("Starting the plot_kmer.py script...")
 
     # Create output folder if it doesn't exist
     os.makedirs(args.output_folder, exist_ok=True)
-    print(f"Output will be saved to: {args.output_folder}")
+    logging.info(f"Output will be saved to: {args.output_folder}")
 
     # Read the summary table
     try:
         summary_df = pd.read_csv(args.summary_table, sep=';')
-        print(f"Summary table loaded with {summary_df.shape[0]} samples and {summary_df.shape[1]} columns.")
+        logging.info(f"Summary table loaded with {summary_df.shape[0]} samples and {summary_df.shape[1]} columns.")
     except Exception as e:
-        print(f"Error reading summary table: {e}")
+        logging.error(f"Error reading summary table: {e}")
         sys.exit(1)
 
     # Read metadata and taxa tables
     try:
         metadata_df = pd.read_csv(args.metadata_table)
-        print(f"Metadata table loaded with {metadata_df.shape[0]} samples and {metadata_df.shape[1]} columns.")
+        logging.info(f"Metadata table loaded with {metadata_df.shape[0]} samples and {metadata_df.shape[1]} columns.")
     except Exception as e:
-        print(f"Error reading metadata table: {e}")
+        logging.error(f"Error reading metadata table: {e}")
         sys.exit(1)
 
     try:
         taxa_df = pd.read_csv(args.taxa_table)
-        print(f"Taxa table loaded with {taxa_df.shape[0]} samples and {taxa_df.shape[1]} columns.")
+        logging.info(f"Taxa table loaded with {taxa_df.shape[0]} samples and {taxa_df.shape[1]} columns.")
     except Exception as e:
-        print(f"Error reading taxa table: {e}")
+        logging.error(f"Error reading taxa table: {e}")
         sys.exit(1)
 
-    # Check for 'sample' column in all DataFrames
-    if 'sample' not in summary_df.columns:
-        print("Error: 'sample' column not found in the summary table.")
-        sys.exit(1)
-    if 'sample' not in metadata_df.columns:
-        print("Error: 'sample' column not found in the metadata table.")
-        sys.exit(1)
-    if 'sample' not in taxa_df.columns:
-        print("Error: 'sample' column not found in the taxa table.")
+    # Parse the JSON strings in k-mer frequency and nucleotide distribution columns
+    try:
+        summary_df['left_kmer_dict'] = summary_df['leftflank_kmer_freq'].apply(safe_json_loads)
+        summary_df['right_kmer_dict'] = summary_df['rightflank_kmer_freq'].apply(safe_json_loads)
+        summary_df['spacer_kmer_dict'] = summary_df['spacer_kmer_frequencies'].apply(safe_json_loads)
+        summary_df['spacer_nuc_dist'] = summary_df['spacer_nucleotide_distribution'].apply(safe_json_loads)
+        summary_df['dr_nuc_dist'] = summary_df['dr_nucleotide_distribution'].apply(safe_json_loads)
+        logging.info("JSON columns parsed successfully.")
+    except Exception as e:
+        logging.error(f"Error parsing JSON columns: {e}")
         sys.exit(1)
 
-    # Merge the DataFrames
+    # Merge the DataFrames on 'sample'
+    if 'sample' not in summary_df.columns or 'sample' not in metadata_df.columns or 'sample' not in taxa_df.columns:
+        logging.error("One of the DataFrames does not contain the 'sample' column for merging.")
+        sys.exit(1)
+
     merged_df = summary_df.merge(metadata_df, on='sample', how='left')
     merged_df = merged_df.merge(taxa_df, on='sample', how='left')
-    print(f"Merged DataFrame has {merged_df.shape[0]} samples and {merged_df.shape[1]} columns.")
+    logging.info(f"Merged DataFrame has {merged_df.shape[0]} samples and {merged_df.shape[1]} columns.")
 
-    # Verify that expected columns exist after merging
-    expected_columns = ['Genus', 'Spore formation']
-    missing_columns = [col for col in expected_columns if col not in merged_df.columns]
-    if missing_columns:
-        print(f"Warning: The following expected columns are missing after merging: {', '.join(missing_columns)}")
-
-    # **Filter out samples where num_crispr_arrays is zero**
+    # Filter out samples where num_crispr_arrays is zero
     if 'num_crispr_arrays' in merged_df.columns:
         initial_count = merged_df.shape[0]
         merged_df = merged_df[merged_df['num_crispr_arrays'] > 0].reset_index(drop=True)
         filtered_count = merged_df.shape[0]
-        print(f"Filtered out {initial_count - filtered_count} samples with num_crispr_arrays == 0.")
-        print(f"Remaining samples after filtering: {filtered_count}.")
+        logging.info(f"Filtered out {initial_count - filtered_count} samples with num_crispr_arrays <= 0.")
     else:
-        print("Warning: 'num_crispr_arrays' column not found. No filtering applied.")
+        logging.warning("Column 'num_crispr_arrays' not found in merged DataFrame.")
 
-    # Define the data columns to plot
+    # Define taxonomic levels to include
+    taxonomic_levels = ['Phylum', 'Class', 'Order', 'Family', 'Genus']
+
+    # Initialize the list of categorical hues with other categorical attributes
+    categorical_hues = ['Spore formation', 'Motility']  # Exclude 'Genus' for separate handling
+
+    # Ensure other categorical_hues exist and are of 'category' dtype
+    for hue in ['Spore formation', 'Motility']:
+        if hue in merged_df.columns:
+            merged_df[hue].fillna('Unknown', inplace=True)
+            merged_df[hue] = merged_df[hue].astype('category')
+            logging.info(f"Distribution of '{hue}':")
+            logging.info(merged_df[hue].value_counts())
+        else:
+            logging.warning(f"Categorical hue '{hue}' not found in merged DataFrame.")
+
+    # Initialize list for numerical hues
+    numerical_hues = ['num_crispr_arrays', 'average_crispr_length']  # Adjust based on your data
+
+    # Limit each taxonomic level to top N categories and create new limited columns
+    for idx, taxon in enumerate(taxonomic_levels):
+        if taxon in merged_df.columns:
+            # Replace missing values with 'Unknown'
+            merged_df[taxon].fillna('Unknown', inplace=True)
+
+            # Determine top N categories
+            if idx < len(args.top_taxa_count):
+                top_n = args.top_taxa_count[idx]
+            else:
+                top_n = args.top_taxa
+
+            top_categories = merged_df[taxon].value_counts().nlargest(top_n).index.tolist()
+
+            # Create new column with limited categories
+            limited_col = f"{taxon}_limited"
+            merged_df[limited_col] = merged_df[taxon].apply(lambda x: x if x in top_categories else 'Other')
+
+            # Convert to 'category' dtype to enable .cat accessor
+            merged_df[limited_col] = merged_df[limited_col].astype('category')
+
+            logging.info(f"Top {top_n} categories for '{taxon}': {top_categories}")
+            logging.info(f"Distribution of '{limited_col}':")
+            logging.info(merged_df[limited_col].value_counts())
+
+            # Add to categorical_hues
+            categorical_hues.append(limited_col)
+        else:
+            logging.warning(f"Taxonomic level '{taxon}' not found in merged DataFrame.")
+
+    logging.info(f"\nCategorical hues to be plotted: {categorical_hues}")
+
+    # Choose a color palette that can accommodate up to 10 distinct categories
+    categorical_palette = sns.color_palette("tab10", n_colors=10)
+
+    # Define a dictionary for specific palettes per taxonomic level (optional)
+    # Uncomment and customize if distinct palettes are desired for each taxonomic level
+    """
+    palette_dict = {
+        'Phylum_limited': sns.color_palette("Set1", n_colors=10),
+        'Class_limited': sns.color_palette("Set2", n_colors=10),
+        'Order_limited': sns.color_palette("Set3", n_colors=10),
+        'Family_limited': sns.color_palette("Pastel1", n_colors=10),
+        'Genus_limited': sns.color_palette("tab10", n_colors=10)
+    }
+    """
+
+    # Read data columns for processing
+    # Assuming that k-mer frequency columns are named appropriately
     data_columns = {
-        'rightflank_kmer_freq': 'Right Flank k-mer Frequencies',
-        'leftflank_kmer_freq': 'Left Flank k-mer Frequencies',
-        'spacer_kmer_frequencies': 'Spacer k-mer Frequencies',
-        'spacer_nucleotide_distribution': 'Spacer Nucleotide Distribution',
-        'dr_nucleotide_distribution': 'DR Nucleotide Distribution'
+        'left_kmer_dict': 'Left Flank k-mer Frequencies',
+        'right_kmer_dict': 'Right Flank k-mer Frequencies',
+        'spacer_kmer_dict': 'Spacer k-mer Frequencies',
+        'spacer_nuc_dist': 'Spacer Nucleotide Distribution',
+        'dr_nuc_dist': 'DR Nucleotide Distribution'
     }
 
-    # Dynamically retrieve hue attributes from merged DataFrame
-    available_hues = ['Genus', 'Spore formation', 'Motility']  # Adjust based on your data
-    hue_attributes = [col for col in available_hues if col in merged_df.columns]
-    print(f"Hue attributes to be used for coloring: {', '.join(hue_attributes)}")
-
-    # Process each data column
     for data_col, description in data_columns.items():
-        print(f"\nProcessing '{data_col}': {description}")
+        logging.info(f"\nProcessing '{data_col}': {description}")
 
         if data_col not in merged_df.columns:
-            print(f"Warning: Column '{data_col}' not found in the merged DataFrame.")
+            logging.warning(f"Data column '{data_col}' not found in merged DataFrame.")
             continue
 
-        if 'nucleotide_distribution' in data_col:
-            # Handle nucleotide distribution columns
-            try:
-                freq_dict = merged_df[data_col].apply(json.loads)
-            except json.JSONDecodeError as e:
-                print(f"Error parsing JSON in column '{data_col}': {e}")
+        # Handle nucleotide distribution columns separately if needed
+        if 'nuc_dist' in data_col:
+            # Placeholder: Implement nucleotide distribution handling if necessary
+            logging.info(f"Skipping plotting for nucleotide distribution column '{data_col}'. Implement if needed.")
+            continue
+
+        # Handle k-mer frequency columns
+        if 'kmer_dict' in data_col:
+            # Extract k-mer dictionaries
+            kmer_dicts = merged_df[data_col].apply(lambda x: flatten_kmer_dict(x, args.kmer_sizes))
+
+            # Get all unique k-mers across all samples
+            all_kmers = sorted(set(kmer for d in kmer_dicts for kmer in d.keys()))
+            logging.info(f"Total unique k-mers in '{data_col}': {len(all_kmers)}")
+
+            # Convert k-mer dictionaries to vectors
+            feature_matrix = kmer_dicts.apply(lambda x: kmer_dict_to_vector(x, all_kmers)).tolist()
+            feature_matrix = np.array(feature_matrix)
+            logging.info(f"Feature matrix shape for '{data_col}': {feature_matrix.shape}")
+
+            # Proceed only if feature_matrix is not empty
+            if feature_matrix.size == 0:
+                logging.warning(f"Feature matrix for '{data_col}' is empty. Skipping.")
                 continue
 
-            # Convert dictionaries to DataFrame
-            freq_df = pd.json_normalize(freq_dict)
-            freq_df.fillna(0, inplace=True)
+            # Perform UMAP and plot for each categorical hue attribute (including limited taxonomic levels)
+            for hue in categorical_hues:
+                logging.info(f"  - Generating UMAP plot colored by categorical hue '{hue}'.")
+                metadata = merged_df[hue]
 
-            # Feature matrix and nucleotides list
-            feature_matrix = freq_df.values
-            all_kmers = freq_df.columns.tolist()
-            print(f"Total nucleotide features in '{data_col}': {len(all_kmers)}")
+                # Check for missing values in metadata
+                if metadata.isnull().all():
+                    logging.warning(f"    Warning: All values in '{hue}' are missing. Skipping.")
+                    continue
 
-        else:
-            # Handle k-mer frequency columns
-            kmer_dicts = merged_df[data_col].apply(json.loads)
+                output_filename = f"umap_{data_col}_{hue}.png"
+                output_path = os.path.join(args.output_folder, output_filename)
 
-            # Flatten the nested k-mer dictionaries
-            kmer_dicts_flat = kmer_dicts.apply(lambda x: flatten_kmer_dict(x, args.kmer_sizes))
+                # Optional: Use specific palette per hue
+                # palette = palette_dict.get(hue, categorical_palette)  # Uncomment if palette_dict is defined
+                palette = categorical_palette  # Using general palette
 
-            # Extract all unique k-mers from flattened dicts
-            all_kmers = set()
-            for d in kmer_dicts_flat:
-                all_kmers.update(d.keys())
-            all_kmers = sorted(all_kmers)
-            print(f"Total unique k-mers in '{data_col}': {len(all_kmers)}")
+                generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='categorical', palette=palette)
 
-            # Convert flattened dictionaries to vectors
-            feature_matrix = kmer_dicts_flat.apply(lambda x: kmer_dict_to_vector(x, all_kmers)).tolist()
-            feature_matrix = np.array(feature_matrix)
+            # Optionally, perform UMAP and plot for each numerical hue attribute with log scaling
+            for hue in numerical_hues:
+                logging.info(f"  - Generating UMAP plot with log-scaled numerical hue '{hue}'.")
+                metadata = merged_df[hue]
 
-        print(f"Feature matrix shape for '{data_col}': {feature_matrix.shape}")
+                # Check for missing values in metadata
+                if metadata.isnull().all():
+                    logging.warning(f"    Warning: All values in '{hue}' are missing. Skipping.")
+                    continue
 
-        # Perform UMAP and plot for each hue attribute
-        for hue in hue_attributes:
-            print(f"  - Generating UMAP plot colored by '{hue}'.")
-            metadata = merged_df[hue]
+                output_filename = f"umap_{data_col}_{hue}_log.png"
+                output_path = os.path.join(args.output_folder, output_filename)
 
-            output_filename = f"umap_{data_col}_{hue}.png"
-            output_path = os.path.join(args.output_folder, output_filename)
+                generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='numerical', log_scale=True)
 
-            generate_umap_plot(feature_matrix, metadata, hue, output_path)
-
-    print("\nAll plots have been generated.")
+    logging.info("\nAll plots have been generated.")
 
 if __name__ == "__main__":
     main()
