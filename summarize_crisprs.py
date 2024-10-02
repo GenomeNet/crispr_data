@@ -24,13 +24,25 @@ def get_kmer_frequencies(sequences, k):
     kmer_freq = {kmer: round((count / total_kmers) * 100, 2) for kmer, count in kmer_counter.items()}
     return kmer_freq
 
-def process_json_file(json_file, k=3):
+def get_nucleotide_distribution(sequences):
+    """Compute nucleotide frequencies for a list of sequences."""
+    total_length = sum(len(seq) for seq in sequences)
+    nucleotide_counts = Counter()
+    for seq in sequences:
+        nucleotide_counts.update(seq.upper())
+    if total_length == 0:
+        return {}
+    nucleotide_freq = {nuc: round((count / total_length) * 100, 2)
+                       for nuc, count in nucleotide_counts.items()}
+    return nucleotide_freq
+
+def process_json_file(json_file, k_list=[3]):
     """
     Process a single JSON file to extract CRISPR information and calculate summary statistics, including k-mer profiles.
 
     Args:
         json_file (str): Path to the JSON file.
-        k (int): Size of the k-mer. Default is 3.
+        k_list (list): Sizes of the k-mers. Default is [3].
 
     Returns:
         dict: A dictionary containing summarized CRISPR information for the sample.
@@ -62,6 +74,7 @@ def process_json_file(json_file, k=3):
     dr_consensuses = []
     leftflank_sequences = []
     rightflank_sequences = []
+    spacer_sequences = []
 
     for sequence in sequences:
         seq_length = sequence.get('Length', 0)
@@ -117,6 +130,10 @@ def process_json_file(json_file, k=3):
                     right_seq = region.get('Sequence', '')
                     if right_seq:
                         rightflank_sequences.append(right_seq)
+                elif region.get('Type') == 'Spacer':
+                    spacer_seq = region.get('Sequence', '')
+                    if spacer_seq:
+                        spacer_sequences.append(spacer_seq)
 
     if total_sequence_length > 0:
         average_at = at_weighted_sum / total_sequence_length
@@ -194,13 +211,27 @@ def process_json_file(json_file, k=3):
     else:
         most_common_dr = ''
 
-    # Compute k-mer frequencies for LeftFLANK and RightFLANK
-    leftflank_kmer_freq = get_kmer_frequencies(leftflank_sequences, k)
-    rightflank_kmer_freq = get_kmer_frequencies(rightflank_sequences, k)
+    # Compute nucleotide distributions
+    dr_nt_distribution = get_nucleotide_distribution(dr_consensuses)
+    dr_nt_distribution_json = json.dumps(dr_nt_distribution)
 
-    # Convert k-mer frequency dictionaries to JSON strings for CSV
-    leftflank_kmer_json = json.dumps(leftflank_kmer_freq)
-    rightflank_kmer_json = json.dumps(rightflank_kmer_freq)
+    spacer_nt_distribution = get_nucleotide_distribution(spacer_sequences)
+    spacer_nt_distribution_json = json.dumps(spacer_nt_distribution)
+
+    # Compute k-mer frequencies for spacers
+    spacer_kmer_freqs = {}
+    for k in [2, 3]:
+        spacer_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(spacer_sequences, k)
+    spacer_kmer_json = json.dumps(spacer_kmer_freqs)
+
+    # Collect k-mer frequencies for LeftFLANK and RightFLANK
+    leftflank_kmer_freqs = {}
+    rightflank_kmer_freqs = {}
+    for k in k_list:
+        leftflank_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(leftflank_sequences, k)
+        rightflank_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(rightflank_sequences, k)
+    leftflank_kmer_json = json.dumps(leftflank_kmer_freqs)
+    rightflank_kmer_json = json.dumps(rightflank_kmer_freqs)
 
     # Generate sample name by replacing .json with .fasta
     sample_name = os.path.basename(json_file).replace('.json', '.fasta')
@@ -223,20 +254,23 @@ def process_json_file(json_file, k=3):
         'average_conservation_spacers': round(avg_conservation_spacers, 2),
         'sd_conservation_spacers': round(sd_conservation_spacers, 2) if not np.isnan(sd_conservation_spacers) else 0.0,
         'most_common_DR_consensus': most_common_dr,
-        'leftflank_kmer_freq': leftflank_kmer_json,   # New key
-        'rightflank_kmer_freq': rightflank_kmer_json  # New key
+        'dr_nucleotide_distribution': dr_nt_distribution_json,
+        'spacer_nucleotide_distribution': spacer_nt_distribution_json,
+        'spacer_kmer_frequencies': spacer_kmer_json,
+        'leftflank_kmer_freq': leftflank_kmer_json,
+        'rightflank_kmer_freq': rightflank_kmer_json,
     }
 
     return summary
 
-def summarize_crisprs(input_folder, output_file, k=3):
+def summarize_crisprs(input_folder, output_file, k_list=[3]):
     """
     Summarize CRISPR information from all JSON files in the input folder, including k-mer profiles.
 
     Args:
         input_folder (str): Directory containing CRISPRCasFinder JSON files.
         output_file (str): Path to the output CSV file.
-        k (int): Size of the k-mer. Default is 3.
+        k_list (list): Sizes of the k-mers. Default is [3].
     """
     json_files = [
         os.path.join(input_folder, fname)
@@ -250,7 +284,7 @@ def summarize_crisprs(input_folder, output_file, k=3):
     
     summaries = []
     for json_file in json_files:
-        summary = process_json_file(json_file, k)
+        summary = process_json_file(json_file, k_list)
         if summary:
             summaries.append(summary)
     
@@ -283,15 +317,16 @@ def main():
         help="Output file path for the summary table (e.g., summary_table2.csv)."
     )
     parser.add_argument(
-        "--kmer_size",
+        "--kmer_sizes",
         type=int,
-        default=3,
-        help="Size of the k-mer to compute frequencies. Default is 3."
+        nargs='+',
+        default=[3],
+        help="Sizes of the k-mers to compute frequencies. Default is 3."
     )
     
     args = parser.parse_args()
     
-    summarize_crisprs(args.input_folder, args.output_file, args.kmer_size)
+    summarize_crisprs(args.input_folder, args.output_file, args.kmer_sizes)
 
 if __name__ == "__main__":
     main()
