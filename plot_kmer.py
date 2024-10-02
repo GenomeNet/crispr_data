@@ -7,6 +7,9 @@ import sys  # Ensure sys is imported
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, r2_score
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 import umap.umap_ as umap
 from collections import defaultdict
 import logging
@@ -106,18 +109,23 @@ def safe_json_loads(x):
         logging.error(f"Unexpected type {type(x)} for value: {x}")
         return {}
 
-def generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='categorical', log_scale=False, palette=None):
+def generate_umap_plot(feature_matrix, metadata, hue, output_path, data_col, hue_type='categorical', log_scale=False, palette=None, all_kmers=None, output_folder=None):
     """
-    Perform UMAP dimensionality reduction and generate a scatter plot.
+    Perform UMAP dimensionality reduction, train a model to predict the metadata,
+    generate a scatter plot annotated with model performance metric,
+    and save feature importances to a text file.
 
     Args:
-        feature_matrix (np.ndarray): The feature matrix for UMAP.
-        metadata (pd.Series): Metadata column for coloring.
+        feature_matrix (np.ndarray): The feature matrix for UMAP and model training.
+        metadata (pd.Series): Metadata column for coloring and prediction.
         hue (str): The name of the metadata column.
         output_path (str): Path to save the plot.
+        data_col (str): The name of the current data column (e.g., 'left_kmer').
         hue_type (str): Type of hue ('categorical' or 'numerical').
         log_scale (bool): Whether to apply log scaling to numerical hues.
         palette (list or seaborn palette, optional): Color palette for categorical hues.
+        all_kmers (list, optional): List of all k-mers corresponding to the feature matrix columns.
+        output_folder (str, optional): Folder to save the feature importance files.
     """
     logging.info(f"Generating UMAP plot for hue '{hue}' with type '{hue_type}' and log_scale={log_scale}.")
 
@@ -130,25 +138,99 @@ def generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='cat
     embedding = reducer.fit_transform(feature_matrix_scaled)
     logging.info(f"UMAP embedding shape for '{hue}': {embedding.shape}")
 
+    # Prepare the metadata for model training and plotting
+    metadata_model = metadata.copy()
+
     # Handle log scaling for numerical hues
     if hue_type == 'numerical' and log_scale:
-        metadata = metadata.apply(lambda x: np.log1p(x))  # Apply log1p to handle zero values
+        metadata_model = metadata_model.apply(lambda x: np.log1p(x))  # Apply log1p to handle zero values
 
-    # Create a DataFrame for plotting
+    # Handle missing values in metadata
+    valid_indices = ~metadata_model.isna()
+    if not valid_indices.all():
+        logging.warning(f"Missing values found in metadata '{hue}'. Excluding {(~valid_indices).sum()} samples.")
+        feature_matrix_scaled = feature_matrix_scaled[valid_indices]
+        embedding = embedding[valid_indices]
+        metadata_model = metadata_model[valid_indices]
+
+    # Train a model to predict the metadata from feature_matrix_scaled
+    if hue_type == 'categorical':
+        # Encode categories
+        if not pd.api.types.is_categorical_dtype(metadata_model):
+            metadata_model = metadata_model.astype('category')
+        y = metadata_model.cat.codes
+        num_classes = len(metadata_model.cat.categories)
+
+        # Split data into training and testing sets
+        X_train, X_test, y_train, y_test = train_test_split(
+            feature_matrix_scaled, y, test_size=0.3, random_state=42, stratify=y)
+
+        # Train a classifier
+        clf = RandomForestClassifier(random_state=42)
+        clf.fit(X_train, y_train)
+
+        # Evaluate the classifier
+        y_pred = clf.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+        logging.info(f"Classification accuracy for '{hue}': {accuracy:.4f}")
+
+        # **Save feature importances**
+        if all_kmers is not None and output_folder is not None:
+            importance = clf.feature_importances_
+            feature_importances = sorted(zip(all_kmers, importance), key=lambda x: x[1], reverse=True)
+            importance_file = os.path.join(output_folder, f"feature_importance_{data_col}_{hue}.txt")
+            with open(importance_file, 'w') as f:
+                for kmer, score in feature_importances:
+                    f.write(f"{kmer}\t{score}\n")
+            logging.info(f"Feature importances saved to {importance_file}")
+
+        # Prepare text annotation
+        performance_text = f"Accuracy: {accuracy:.2f}"
+
+    elif hue_type == 'numerical':
+        y = metadata_model.values
+
+        # Split data into training and testing sets
+        X_train, X_test, y_train, y_test = train_test_split(
+            feature_matrix_scaled, y, test_size=0.3, random_state=42)
+
+        # Train a regressor
+        reg = RandomForestRegressor(random_state=42)
+        reg.fit(X_train, y_train)
+
+        # Evaluate the regressor
+        y_pred = reg.predict(X_test)
+        r2 = r2_score(y_test, y_pred)
+        logging.info(f"R² score for '{hue}': {r2:.4f}")
+
+        # **Save feature importances**
+        if all_kmers is not None and output_folder is not None:
+            importance = reg.feature_importances_
+            feature_importances = sorted(zip(all_kmers, importance), key=lambda x: x[1], reverse=True)
+            importance_file = os.path.join(output_folder, f"feature_importance_{data_col}_{hue}.txt")
+            with open(importance_file, 'w') as f:
+                for kmer, score in feature_importances:
+                    f.write(f"{kmer}\t{score}\n")
+            logging.info(f"Feature importances saved to {importance_file}")
+
+        # Prepare text annotation
+        performance_text = f"R²: {r2:.2f}"
+
+    else:
+        logging.error("hue_type must be 'categorical' or 'numerical'.")
+        raise ValueError("hue_type must be 'categorical' or 'numerical'.")
+
+    # Create DataFrame for plotting
     plot_df = pd.DataFrame({
         'UMAP1': embedding[:, 0],
         'UMAP2': embedding[:, 1],
-        'Hue': metadata
+        'Hue': metadata_model.values
     })
 
     plt.figure(figsize=(12, 10))
 
     if hue_type == 'categorical':
-        # Ensure 'Hue' is category dtype
-        if not pd.api.types.is_categorical_dtype(plot_df['Hue']):
-            plot_df['Hue'] = plot_df['Hue'].astype('category')
-
-        plt.title(f"UMAP Colored by {hue}")
+        plt.title(f"UMAP Colored by {hue}\n{performance_text}")
 
         sns.scatterplot(
             x='UMAP1', y='UMAP2',
@@ -161,9 +243,9 @@ def generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='cat
         )
 
         plt.legend(title=hue, bbox_to_anchor=(1.05, 1), loc='upper left')
-    
+
     elif hue_type == 'numerical':
-        plt.title(f"UMAP Colored by {'Log-scaled ' if log_scale else ''}{hue}")
+        plt.title(f"UMAP Colored by {'Log-scaled ' if log_scale else ''}{hue}\n{performance_text}")
 
         scatter = plt.scatter(
             plot_df['UMAP1'],
@@ -184,11 +266,16 @@ def generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='cat
         logging.error("hue_type must be 'categorical' or 'numerical'.")
         raise ValueError("hue_type must be 'categorical' or 'numerical'.")
 
+    # Annotate the plot with performance metric
+    plt.text(0.05, 0.95, performance_text, transform=plt.gca().transAxes,
+             fontsize=12, verticalalignment='top', bbox=dict(boxstyle="round", facecolor='wheat', alpha=0.5))
+
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
     plt.close()
     logging.info(f"Plot saved to {output_path}")
 
+    
 def main():
     # Configure logging
     logging.basicConfig(
@@ -394,7 +481,17 @@ def main():
                 # palette = palette_dict.get(hue, categorical_palette)  # Uncomment if palette_dict is defined
                 palette = categorical_palette  # Using general palette
 
-                generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='categorical', palette=palette)
+                generate_umap_plot(
+                    feature_matrix=feature_matrix,
+                    metadata=metadata,
+                    hue=hue,
+                    output_path=output_path,
+                    data_col=data_col,          # Added data_col argument
+                    hue_type='categorical',
+                    palette=palette,
+                    all_kmers=all_kmers,
+                    output_folder=args.output_folder
+                )
 
             # Optionally, perform UMAP and plot for each numerical hue attribute with log scaling
             for hue in numerical_hues:
@@ -409,7 +506,17 @@ def main():
                 output_filename = f"umap_{data_col}_{hue}_log.png"
                 output_path = os.path.join(args.output_folder, output_filename)
 
-                generate_umap_plot(feature_matrix, metadata, hue, output_path, hue_type='numerical', log_scale=True)
+                generate_umap_plot(
+                    feature_matrix=feature_matrix,
+                    metadata=metadata,
+                    hue=hue,
+                    output_path=output_path,
+                    data_col=data_col,          # Added data_col argument
+                    hue_type='numerical',
+                    log_scale=True,
+                    all_kmers=all_kmers,
+                    output_folder=args.output_folder
+                )
 
     logging.info("\nAll plots have been generated.")
 
