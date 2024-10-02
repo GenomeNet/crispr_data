@@ -93,9 +93,13 @@ def generate_umap_plot(feature_matrix, metadata, hue, output_path):
     feature_matrix_scaled = scaler.fit_transform(feature_matrix)
 
     # Apply UMAP
-    reducer = umap.UMAP(random_state=42)
-    embedding = reducer.fit_transform(feature_matrix_scaled)
-    print(f"UMAP embedding shape: {embedding.shape}")
+    try:
+        reducer = umap.UMAP(random_state=42)
+        embedding = reducer.fit_transform(feature_matrix_scaled)
+        print(f"UMAP embedding shape for '{hue}': {embedding.shape}")
+    except Exception as e:
+        print(f"Error during UMAP embedding for '{hue}': {e}")
+        return
 
     # Create a DataFrame for plotting
     plot_df = pd.DataFrame({
@@ -122,7 +126,7 @@ def generate_umap_plot(feature_matrix, metadata, hue, output_path):
         edgecolor='k',
         alpha=0.7
     )
-    plt.title(f"UMAP of {hue} Colored by {hue}")
+    plt.title(f"UMAP Colored by {hue}")
     plt.legend(bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.)
     plt.tight_layout()
     plt.savefig(output_path, dpi=300)
@@ -138,7 +142,9 @@ def main():
     parser.add_argument("--kmer_sizes", type=int, nargs='+', default=[3, 5], help="Sizes of the k-mers to plot. Default is [3, 5].")
     args = parser.parse_args()
 
+    # Create output folder if it doesn't exist
     os.makedirs(args.output_folder, exist_ok=True)
+    print(f"Output will be saved to: {args.output_folder}")
 
     # Read the summary table
     try:
@@ -163,7 +169,7 @@ def main():
         print(f"Error reading taxa table: {e}")
         sys.exit(1)
 
-    # Verify presence of 'sample' column
+    # Check for 'sample' column in all DataFrames
     if 'sample' not in summary_df.columns:
         print("Error: 'sample' column not found in the summary table.")
         sys.exit(1)
@@ -185,6 +191,16 @@ def main():
     if missing_columns:
         print(f"Warning: The following expected columns are missing after merging: {', '.join(missing_columns)}")
 
+    # **Filter out samples where num_crispr_arrays is zero**
+    if 'num_crispr_arrays' in merged_df.columns:
+        initial_count = merged_df.shape[0]
+        merged_df = merged_df[merged_df['num_crispr_arrays'] > 0].reset_index(drop=True)
+        filtered_count = merged_df.shape[0]
+        print(f"Filtered out {initial_count - filtered_count} samples with num_crispr_arrays == 0.")
+        print(f"Remaining samples after filtering: {filtered_count}.")
+    else:
+        print("Warning: 'num_crispr_arrays' column not found. No filtering applied.")
+
     # Define the data columns to plot
     data_columns = {
         'rightflank_kmer_freq': 'Right Flank k-mer Frequencies',
@@ -197,6 +213,7 @@ def main():
     # Dynamically retrieve hue attributes from merged DataFrame
     available_hues = ['Genus', 'Spore formation', 'Motility']  # Adjust based on your data
     hue_attributes = [col for col in available_hues if col in merged_df.columns]
+    print(f"Hue attributes to be used for coloring: {', '.join(hue_attributes)}")
 
     # Process each data column
     for data_col, description in data_columns.items():
@@ -218,9 +235,10 @@ def main():
             freq_df = pd.json_normalize(freq_dict)
             freq_df.fillna(0, inplace=True)
 
-            # Feature matrix and k-mers list
+            # Feature matrix and nucleotides list
             feature_matrix = freq_df.values
             all_kmers = freq_df.columns.tolist()
+            print(f"Total nucleotide features in '{data_col}': {len(all_kmers)}")
 
         else:
             # Handle k-mer frequency columns
