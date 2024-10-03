@@ -75,6 +75,9 @@ def process_json_file(json_file, k_list=[3]):
     leftflank_sequences = []
     rightflank_sequences = []
     spacer_sequences = []
+    
+    # Collection for Leader FLANKs
+    leader_flank_sequences = []
 
     for sequence in sequences:
         seq_length = sequence.get('Length', 0)
@@ -122,18 +125,21 @@ def process_json_file(json_file, k_list=[3]):
             # Collect k-mer sequences of LeftFLANK and RightFLANK
             regions = crispr.get('Regions', [])
             for region in regions:
-                if region.get('Type') == 'LeftFLANK':
-                    left_seq = region.get('Sequence', '')
-                    if left_seq:
-                        leftflank_sequences.append(left_seq)
-                elif region.get('Type') == 'RightFLANK':
-                    right_seq = region.get('Sequence', '')
-                    if right_seq:
-                        rightflank_sequences.append(right_seq)
-                elif region.get('Type') == 'Spacer':
-                    spacer_seq = region.get('Sequence', '')
-                    if spacer_seq:
-                        spacer_sequences.append(spacer_seq)
+                region_type = region.get('Type')
+                sequence_seq = region.get('Sequence', '')
+                if not sequence_seq:
+                    continue
+
+                if region_type == 'LeftFLANK':
+                    leftflank_sequences.append(sequence_seq)
+                elif region_type == 'RightFLANK':
+                    rightflank_sequences.append(sequence_seq)
+                elif region_type == 'Spacer':
+                    spacer_sequences.append(sequence_seq)
+
+                # Check if Leader is 1 at the region level
+                if region.get('Leader', 0) == 1:
+                    leader_flank_sequences.append(sequence_seq)
 
     if total_sequence_length > 0:
         average_at = at_weighted_sum / total_sequence_length
@@ -211,16 +217,16 @@ def process_json_file(json_file, k_list=[3]):
     else:
         most_common_dr = ''
 
-    # Compute nucleotide distributions
+    # Compute nucleotide distributions using the global function
     dr_nt_distribution = get_nucleotide_distribution(dr_consensuses)
     dr_nt_distribution_json = json.dumps(dr_nt_distribution)
 
     spacer_nt_distribution = get_nucleotide_distribution(spacer_sequences)
     spacer_nt_distribution_json = json.dumps(spacer_nt_distribution)
 
-    # Compute k-mer frequencies for spacers
+    # Compute k-mer frequencies for spacers using user-specified k_list
     spacer_kmer_freqs = {}
-    for k in [2, 3]:
+    for k in k_list:
         spacer_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(spacer_sequences, k)
     spacer_kmer_json = json.dumps(spacer_kmer_freqs)
 
@@ -232,6 +238,12 @@ def process_json_file(json_file, k_list=[3]):
         rightflank_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(rightflank_sequences, k)
     leftflank_kmer_json = json.dumps(leftflank_kmer_freqs)
     rightflank_kmer_json = json.dumps(rightflank_kmer_freqs)
+
+    # Compute k-mer frequencies for Leader FLANKs
+    leader_flank_kmer_freqs = {}
+    for k in k_list:
+        leader_flank_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(leader_flank_sequences, k)
+    leader_flank_kmer_json = json.dumps(leader_flank_kmer_freqs)
 
     # Generate sample name by replacing .json with .fasta
     sample_name = os.path.basename(json_file).replace('.json', '.fasta')
@@ -259,6 +271,7 @@ def process_json_file(json_file, k_list=[3]):
         'spacer_kmer_frequencies': spacer_kmer_json,
         'leftflank_kmer_freq': leftflank_kmer_json,
         'rightflank_kmer_freq': rightflank_kmer_json,
+        'leader_flank_kmer_freq': leader_flank_kmer_json,  # New Column
     }
 
     return summary

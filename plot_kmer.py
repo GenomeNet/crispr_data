@@ -119,180 +119,6 @@ def plot_feature_importances(feature_importances, data_col, hue, output_plot_pat
     plt.close()
     logging.info(f"Feature importances plot saved to {output_plot_path}")
 
-def generate_tsne_plot(feature_matrix, metadata, hue, output_path, data_col, hue_type='categorical', log_scale=False, palette=None, all_kmers=None, output_folder=None, tsne_params={}):
-    """
-    Perform t-SNE dimensionality reduction, train a model to predict the metadata,
-    generate a scatter plot annotated with model performance metric,
-    and save feature importances to a text file and plot them.
-
-    Args:
-        feature_matrix (np.ndarray): The feature matrix for t-SNE and model training.
-        metadata (pd.Series): Metadata column for coloring and prediction.
-        hue (str): The name of the metadata column.
-        output_path (str): Path to save the plot.
-        data_col (str): The name of the current data column (e.g., 'left_kmer').
-        hue_type (str): Type of hue ('categorical' or 'numerical').
-        log_scale (bool): Whether to apply log scaling to numerical hues.
-        palette (list or seaborn palette, optional): Color palette for categorical hues.
-        all_kmers (list, optional): List of all k-mers corresponding to the feature matrix columns.
-        output_folder (str, optional): Folder to save the feature importance files.
-        tsne_params (dict): Parameters to pass to the TSNE algorithm.
-    """
-    logging.info(f"Generating t-SNE plot for hue '{hue}' with type '{hue_type}' and log_scale={log_scale}.")
-
-    # Standardize features
-    scaler = StandardScaler()
-    feature_matrix_scaled = scaler.fit_transform(feature_matrix)
-
-    # Apply t-SNE
-    tsne = TSNE(random_state=42, **tsne_params)
-    embedding = tsne.fit_transform(feature_matrix_scaled)
-    logging.info(f"t-SNE embedding shape for '{hue}': {embedding.shape}")
-
-    # Prepare the metadata for model training and plotting
-    metadata_model = metadata.copy()
-
-    # Handle log scaling for numerical hues
-    if hue_type == 'numerical' and log_scale:
-        metadata_model = metadata_model.apply(lambda x: np.log1p(x))  # Apply log1p to handle zero values
-
-    # Handle missing values in metadata
-    valid_indices = ~metadata_model.isna()
-    if not valid_indices.all():
-        logging.warning(f"Missing values found in metadata '{hue}'. Excluding {(~valid_indices).sum()} samples.")
-        feature_matrix_scaled = feature_matrix_scaled[valid_indices]
-        embedding = embedding[valid_indices]
-        metadata_model = metadata_model[valid_indices]
-
-    # Train a model to predict the metadata from feature_matrix_scaled
-    if hue_type == 'categorical':
-        # Encode categories
-        if not isinstance(metadata_model.dtype, pd.CategoricalDtype):
-            metadata_model = metadata_model.astype('category')
-        y = metadata_model.cat.codes
-        num_classes = len(metadata_model.cat.categories)
-
-        # Split data into training and testing sets
-        X_train, X_test, y_train, y_test = train_test_split(
-            feature_matrix_scaled, y, test_size=0.3, random_state=42, stratify=y)
-
-        # Train a classifier
-        clf = RandomForestClassifier(random_state=42)
-        clf.fit(X_train, y_train)
-
-        # Evaluate the classifier
-        y_pred = clf.predict(X_test)
-        accuracy = accuracy_score(y_test, y_pred)
-        logging.info(f"Classification accuracy for '{hue}': {accuracy:.4f}")
-
-        # **Save feature importances**
-        if all_kmers is not None and output_folder is not None:
-            importance = clf.feature_importances_
-            feature_importances = sorted(zip(all_kmers, importance), key=lambda x: x[1], reverse=True)
-            importance_file = os.path.join(output_folder, f"feature_importance_{data_col}_{hue}_tsne.txt")
-            with open(importance_file, 'w') as f:
-                for kmer, score in feature_importances:
-                    f.write(f"{kmer}\t{score}\n")
-            logging.info(f"Feature importances saved to {importance_file}")
-
-            # **Plot feature importances**
-            feature_importance_plot = os.path.join(output_folder, f"feature_importance_plot_{data_col}_{hue}_tsne.png")
-            plot_feature_importances(feature_importances, data_col, hue, feature_importance_plot)
-
-        # Prepare text annotation
-        performance_text = f"Accuracy: {accuracy:.2f}"
-
-    elif hue_type == 'numerical':
-        y = metadata_model.values
-
-        # Split data into training and testing sets
-        X_train, X_test, y_train, y_test = train_test_split(
-            feature_matrix_scaled, y, test_size=0.3, random_state=42)
-
-        # Train a regressor
-        reg = RandomForestRegressor(random_state=42)
-        reg.fit(X_train, y_train)
-
-        # Evaluate the regressor
-        y_pred = reg.predict(X_test)
-        r2 = r2_score(y_test, y_pred)
-        logging.info(f"R² score for '{hue}': {r2:.4f}")
-
-        # **Save feature importances**
-        if all_kmers is not None and output_folder is not None:
-            importance = reg.feature_importances_
-            feature_importances = sorted(zip(all_kmers, importance), key=lambda x: x[1], reverse=True)
-            importance_file = os.path.join(output_folder, f"feature_importance_{data_col}_{hue}_tsne.txt")
-            with open(importance_file, 'w') as f:
-                for kmer, score in feature_importances:
-                    f.write(f"{kmer}\t{score}\n")
-            logging.info(f"Feature importances saved to {importance_file}")
-
-            # **Plot feature importances**
-            feature_importance_plot = os.path.join(output_folder, f"feature_importance_plot_{data_col}_{hue}_tsne.png")
-            plot_feature_importances(feature_importances, data_col, hue, feature_importance_plot)
-
-        # Prepare text annotation
-        performance_text = f"R²: {r2:.2f}"
-
-    else:
-        logging.error("hue_type must be 'categorical' or 'numerical'.")
-        raise ValueError("hue_type must be 'categorical' or 'numerical'.")
-
-    # Create DataFrame for plotting
-    plot_df = pd.DataFrame({
-        'Dim1': embedding[:, 0],
-        'Dim2': embedding[:, 1],
-        'Hue': metadata_model.values
-    })
-
-    plt.figure(figsize=(12, 10))
-
-    if hue_type == 'categorical':
-        plt.title(f"t-SNE Colored by {hue}\n{performance_text}")
-
-        sns.scatterplot(
-            x='Dim1', y='Dim2',
-            hue='Hue',
-            data=plot_df,
-            palette=palette,
-            s=80,
-            edgecolor='k',
-            alpha=0.7
-        )
-
-        plt.legend(title=hue, bbox_to_anchor=(1.05, 1), loc='upper left')
-
-    elif hue_type == 'numerical':
-        plt.title(f"t-SNE Colored by {'Log-scaled ' if log_scale else ''}{hue}\n{performance_text}")
-
-        scatter = plt.scatter(
-            plot_df['Dim1'],
-            plot_df['Dim2'],
-            c=plot_df['Hue'],
-            cmap='viridis',
-            s=80,
-            edgecolor='k',
-            alpha=0.7
-        )
-
-        cbar = plt.colorbar(scatter)
-        if log_scale:
-            cbar.set_label(f'Log of {hue}')
-        else:
-            cbar.set_label(hue)
-    else:
-        logging.error("hue_type must be 'categorical' or 'numerical'.")
-        raise ValueError("hue_type must be 'categorical' or 'numerical'.")
-
-    # Annotate the plot with performance metric
-    plt.text(0.05, 0.95, performance_text, transform=plt.gca().transAxes,
-             fontsize=12, verticalalignment='top', bbox=dict(boxstyle="round", facecolor='wheat', alpha=0.5))
-
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-    logging.info(f"t-SNE plot saved to {output_path}")
 
 def generate_umap_plot(feature_matrix, metadata, hue, output_path, data_col, hue_type='categorical', log_scale=False, palette=None, all_kmers=None, output_folder=None, umap_params={}):
     """
@@ -701,6 +527,7 @@ def main():
 
     # Parse the JSON strings in k-mer frequency and nucleotide distribution columns
     try:
+        summary_df['leader_flank_kmer_dict'] = summary_df['leader_flank_kmer_freq'].apply(safe_json_loads)
         summary_df['left_kmer_dict'] = summary_df['leftflank_kmer_freq'].apply(safe_json_loads)
         summary_df['right_kmer_dict'] = summary_df['rightflank_kmer_freq'].apply(safe_json_loads)
         summary_df['spacer_kmer_dict'] = summary_df['spacer_kmer_frequencies'].apply(safe_json_loads)
@@ -731,6 +558,7 @@ def main():
 
     # Define the data columns to process
     data_columns = {
+        'leader_flank_kmer': 'Leader Flank k-mer',
         'left_kmer': 'Left Flank k-mer',
         'right_kmer': 'Right Flank k-mer',
         'spacer_kmer': 'Spacer k-mer'

@@ -1,4 +1,4 @@
-Motility,Gram staining,Aerophilicity,Extreme environment tolerance,Biofilm formation,Animal pathogenicity,Biosafety level,Health association,Host association,Plant pathogenicity,Spore formation,Hemolysis,Cell shape,Member of WA subset,Fasta file
+Motility,Gram staining,Aerophilicity,Extreme environment tolerance,Biofilm formation,Animal pathogenicity,Biosafety level,Health association,Host association,Plant pathogenicity,Spore formation,Hemolysis,Cell shape,Member of WA subset,sample
 TRUE,gram stain negative,aerobic,FALSE,NA,NA,biosafety level 1,NA,TRUE,NA,FALSE,NA,bacillus,TRUE,GCA_900094795.1_IMG-taxon_2616644846_annotated_assembly_genomic.fasta
 TRUE,gram stain negative,aerobic,FALSE,NA,NA,biosafety level 1,NA,FALSE,FALSE,FALSE,NA,bacillus,TRUE,GCA_900106975.1_IMG-taxon_2671180037_annotated_assembly_genomic.fasta
 TRUE,gram stain negative,aerobic,TRUE,NA,FALSE,biosafety level 1,NA,FALSE,FALSE,FALSE,NA,bacillus,TRUE,GCA_900101755.1_IMG-taxon_2663762780_annotated_assembly_genomic.fasta
