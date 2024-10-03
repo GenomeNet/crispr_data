@@ -6,23 +6,31 @@ from collections import defaultdict
 def parse_gff_file(gff_path):
     """
     Parse a GFF file and yield each entry as a tuple of fields.
+    Also returns FASTA data if present.
 
     Args:
         gff_path (str): Path to the GFF file.
 
     Yields:
-        tuple: A tuple containing the 9 GFF fields.
+        tuple: A tuple containing the 9 GFF fields or FASTA data.
     """
     with open(gff_path, 'r') as f:
+        in_fasta = False
         for line in f:
             line = line.strip()
-            if not line or line.startswith('#'):
+            if line == "##FASTA":
+                in_fasta = True
+                yield (line,)
+            elif in_fasta:
+                yield (line,)
+            elif not line or line.startswith('#'):
                 continue  # Skip headers and empty lines
-            parts = line.split('\t')
-            if len(parts) != 9:
-                logging.warning(f"Invalid GFF line in {gff_path}: {line}")
-                continue
-            yield tuple(parts)
+            else:
+                parts = line.split('\t')
+                if len(parts) != 9:
+                    logging.warning(f"Invalid GFF line in {gff_path}: {line}")
+                    continue
+                yield tuple(parts)
 
 def generate_unique_key(entry):
     """
@@ -39,58 +47,81 @@ def generate_unique_key(entry):
 
 def combine_gff(gff_folders, extra_gff_folders, output_folder):
     """
-    Combine multiple GFF files into a single GFF file, checking for duplicates.
+    Combine pairs of GFF files from gff_folders and extra_gff_folders.
 
     Args:
         gff_folders (list): List of folders containing main GFF files.
         extra_gff_folders (list): List of folders containing extra GFF files.
-        output_folder (str): Directory to save the combined GFF file.
+        output_folder (str): Directory to save the combined GFF files.
     """
     os.makedirs(output_folder, exist_ok=True)
-    combined_gff_path = os.path.join(output_folder, "combined.gff")
 
-    seen_entries = set()
-    duplicate_count = 0
-    total_entries = 0
+    # Create a dictionary to store extra GFF file paths
+    extra_gff_files = {}
+    for folder in extra_gff_folders:
+        for filename in os.listdir(folder):
+            if filename.endswith('.gff') or filename.endswith('.gff3'):
+                extra_gff_files[filename] = os.path.join(folder, filename)
 
-    logging.info(f"Combining GFF files into {combined_gff_path}")
+    # Process each main GFF file
+    for folder in gff_folders:
+        for filename in os.listdir(folder):
+            if filename.endswith('.gff') or filename.endswith('.gff3'):
+                main_gff_path = os.path.join(folder, filename)
+                extra_gff_path = extra_gff_files.get(filename)
 
-    with open(combined_gff_path, 'w') as out_gff:
-        # Write GFF3 header
-        out_gff.write("##gff-version 3\n")
+                if extra_gff_path:
+                    output_gff_path = os.path.join(output_folder, filename)
+                    logging.info(f"Combining {main_gff_path} and {extra_gff_path}")
+                    logging.info(f"Generating output file: {output_gff_path}")
 
-        # Function to process folders
-        def process_folders(folders, description):
-            nonlocal duplicate_count, total_entries
-            for folder in folders:
-                if not os.path.isdir(folder):
-                    logging.warning(f"Folder not found: {folder}")
-                    continue
-                for filename in os.listdir(folder):
-                    if filename.endswith('.gff') or filename.endswith('.gff3'):
-                        gff_path = os.path.join(folder, filename)
-                        logging.info(f"Processing {description} GFF file: {gff_path}")
+                    seen_entries = set()
+                    duplicate_count = 0
+                    total_entries = 0
+                    fasta_data = []
+                    fasta_written = False
+
+                    # Function to process a single GFF file
+                    def process_gff_file(gff_path):
+                        nonlocal duplicate_count, total_entries, fasta_written
                         for entry in parse_gff_file(gff_path):
-                            key = generate_unique_key(entry)
-                            if key in seen_entries:
-                                duplicate_count += 1
-                                logging.warning(f"Duplicate entry found in {gff_path}: {entry}")
-                                continue
-                            seen_entries.add(key)
-                            out_gff.write('\t'.join(entry) + '\n')
-                            total_entries += 1
+                            if len(entry) == 1:  # FASTA data
+                                if not fasta_written:
+                                    fasta_data.append(entry[0])
+                            else:
+                                key = generate_unique_key(entry)
+                                if key not in seen_entries:
+                                    seen_entries.add(key)
+                                    out_gff.write('\t'.join(entry) + '\n')
+                                    total_entries += 1
+                                else:
+                                    duplicate_count += 1
 
-        # Process main GFF folders
-        process_folders(gff_folders, "main")
+                    with open(output_gff_path, 'w') as out_gff:
+                        out_gff.write("##gff-version 3\n")
 
-        # Process extra GFF folders
-        process_folders(extra_gff_folders, "extra")
+                        # Process main GFF file
+                        process_gff_file(main_gff_path)
 
-    logging.info(f"Total entries combined: {total_entries}")
-    if duplicate_count > 0:
-        logging.warning(f"Total duplicate entries skipped: {duplicate_count}")
-    else:
-        logging.info("No duplicate entries found.")
+                        # Process extra GFF file
+                        if extra_gff_path:
+                            process_gff_file(extra_gff_path)
+
+                        # Write FASTA data if present
+                        if fasta_data:
+                            out_gff.write("##FASTA\n")
+                            for line in fasta_data:
+                                if line != "##FASTA":  # Avoid writing duplicate ##FASTA lines
+                                    out_gff.write(line + "\n")
+                            fasta_written = True
+
+                    logging.info(f"Total entries combined: {total_entries}")
+                    if duplicate_count > 0:
+                        logging.warning(f"Total duplicate entries skipped: {duplicate_count}")
+                    else:
+                        logging.info("No duplicate entries found.")
+                else:
+                    logging.warning(f"No matching extra GFF file found for {filename}")
 
 def main():
     parser = argparse.ArgumentParser(description="Combine multiple GFF files into one, checking for duplicates.")

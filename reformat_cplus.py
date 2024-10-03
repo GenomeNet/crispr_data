@@ -17,6 +17,9 @@ def json_to_gff(json_data, seqid):
     gff_lines = []
     crisprs = json_data.get('Crisprs', [])
 
+    # Add the "gnl|X|" prefix to the seqid
+    seqid_with_prefix = f"gnl|X|{seqid}"
+
     for idx, crispr in enumerate(crisprs, 1):
         start = crispr.get('Start')
         end = crispr.get('End')
@@ -36,7 +39,7 @@ def json_to_gff(json_data, seqid):
         )
 
         gff_line = (
-            f"{seqid}\tCRISPRCasFinder\tCRISPR\t{start}\t{end}\t.\t.\t.\t{attributes}"
+            f"{seqid_with_prefix}\tCRISPRCasFinder\trepeat_region\t{start}\t{end}\t.\t.\t.\t{attributes}"
         )
         gff_lines.append(gff_line)
 
