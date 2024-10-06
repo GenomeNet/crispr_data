@@ -16,15 +16,20 @@ def parse_gff_file(gff_path):
     """
     with open(gff_path, 'r') as f:
         in_fasta = False
+        header_written = False
         for line in f:
             line = line.strip()
+            if not header_written and not line.startswith('#'):
+                yield ("##gff-version 3",)
+                header_written = True
             if line == "##FASTA":
                 in_fasta = True
                 yield (line,)
             elif in_fasta:
                 yield (line,)
             elif not line or line.startswith('#'):
-                continue  # Skip headers and empty lines
+                if line:  # Only yield non-empty header lines
+                    yield (line,)
             else:
                 parts = line.split('\t')
                 if len(parts) != 9:
@@ -57,71 +62,91 @@ def combine_gff(gff_folders, extra_gff_folders, output_folder):
     os.makedirs(output_folder, exist_ok=True)
 
     # Create a dictionary to store extra GFF file paths
-    extra_gff_files = {}
+    extra_gff_files = defaultdict(list)
     for folder in extra_gff_folders:
         for filename in os.listdir(folder):
             if filename.endswith('.gff') or filename.endswith('.gff3'):
-                extra_gff_files[filename] = os.path.join(folder, filename)
+                extra_gff_files[filename].append(os.path.join(folder, filename))
 
     # Process each main GFF file
     for folder in gff_folders:
         for filename in os.listdir(folder):
             if filename.endswith('.gff') or filename.endswith('.gff3'):
                 main_gff_path = os.path.join(folder, filename)
-                extra_gff_path = extra_gff_files.get(filename)
+                extra_gff_paths = extra_gff_files.get(filename, [])
 
-                if extra_gff_path:
-                    output_gff_path = os.path.join(output_folder, filename)
-                    logging.info(f"Combining {main_gff_path} and {extra_gff_path}")
-                    logging.info(f"Generating output file: {output_gff_path}")
+                output_gff_path = os.path.join(output_folder, filename)
+                logging.info(f"Processing main file: {main_gff_path}")
+                logging.info(f"Extra files to combine: {extra_gff_paths}")
+                logging.info(f"Generating output file: {output_gff_path}")
 
-                    seen_entries = set()
-                    duplicate_count = 0
-                    total_entries = 0
-                    fasta_data = []
-                    fasta_written = False
+                seen_entries = set()
+                duplicate_count = 0
+                total_entries = 0
+                fasta_data = []
+                fasta_written = False
+                header_written = False
 
-                    # Function to process a single GFF file
-                    def process_gff_file(gff_path):
-                        nonlocal duplicate_count, total_entries, fasta_written
-                        for entry in parse_gff_file(gff_path):
-                            if len(entry) == 1:  # FASTA data
+                # Function to process a single GFF file
+                def process_gff_file(gff_path):
+                    nonlocal duplicate_count, total_entries, fasta_written, header_written
+                    is_crt_gff = 'crt_gff' in gff_path
+                    for entry in parse_gff_file(gff_path):
+                        if len(entry) == 1:  # Header or FASTA data
+                            if entry[0] == "##FASTA":
                                 if not fasta_written:
                                     fasta_data.append(entry[0])
+                            elif entry[0].startswith('#'):
+                                if not header_written:  # Only write headers once
+                                    if entry[0] != "##gff-version 3" or not seen_entries:
+                                        out_gff.write(entry[0] + '\n')
+                                        if entry[0] == "##gff-version 3":
+                                            header_written = True
                             else:
-                                key = generate_unique_key(entry)
-                                if key not in seen_entries:
-                                    seen_entries.add(key)
-                                    out_gff.write('\t'.join(entry) + '\n')
-                                    total_entries += 1
-                                else:
-                                    duplicate_count += 1
+                                fasta_data.append(entry[0])
+                        else:
+                            if is_crt_gff and len(entry) == 9:
+                                # Replace 'note=' with 'ID=' for crt_gff files
+                                attributes = entry[8].split(';')
+                                new_attributes = []
+                                for attr in attributes:
+                                    if attr.startswith('note='):
+                                        new_attributes.append('ID=' + attr[5:])
+                                    else:
+                                        new_attributes.append(attr)
+                                entry = list(entry)
+                                entry[8] = ';'.join(new_attributes)
+                                entry = tuple(entry)
 
-                    with open(output_gff_path, 'w') as out_gff:
-                        out_gff.write("##gff-version 3\n")
+                            key = generate_unique_key(entry)
+                            if key not in seen_entries:
+                                seen_entries.add(key)
+                                out_gff.write('\t'.join(entry) + '\n')
+                                total_entries += 1
+                            else:
+                                duplicate_count += 1
 
-                        # Process main GFF file
-                        process_gff_file(main_gff_path)
+                with open(output_gff_path, 'w') as out_gff:
+                    # Process main GFF file
+                    process_gff_file(main_gff_path)
 
-                        # Process extra GFF file
-                        if extra_gff_path:
-                            process_gff_file(extra_gff_path)
+                    # Process extra GFF files
+                    for extra_gff_path in extra_gff_paths:
+                        process_gff_file(extra_gff_path)
 
-                        # Write FASTA data if present
-                        if fasta_data:
-                            out_gff.write("##FASTA\n")
-                            for line in fasta_data:
-                                if line != "##FASTA":  # Avoid writing duplicate ##FASTA lines
-                                    out_gff.write(line + "\n")
-                            fasta_written = True
+                    # Write FASTA data if present
+                    if fasta_data:
+                        out_gff.write("##FASTA\n")
+                        for line in fasta_data:
+                            if line != "##FASTA":  # Avoid writing duplicate ##FASTA lines
+                                out_gff.write(line + "\n")
+                        fasta_written = True
 
-                    logging.info(f"Total entries combined: {total_entries}")
-                    if duplicate_count > 0:
-                        logging.warning(f"Total duplicate entries skipped: {duplicate_count}")
-                    else:
-                        logging.info("No duplicate entries found.")
+                logging.info(f"Total entries combined: {total_entries}")
+                if duplicate_count > 0:
+                    logging.warning(f"Total duplicate entries skipped: {duplicate_count}")
                 else:
-                    logging.warning(f"No matching extra GFF file found for {filename}")
+                    logging.info("No duplicate entries found.")
 
 def main():
     parser = argparse.ArgumentParser(description="Combine multiple GFF files into one, checking for duplicates.")

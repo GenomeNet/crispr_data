@@ -25,6 +25,7 @@ def safe_json_loads(json_str):
     except json.JSONDecodeError:
         return {}
 
+
 def flatten_kmer_dict(kmer_dict, kmer_sizes):
     """
     Flatten k-mer dictionaries for specified k-mer sizes.
@@ -35,17 +36,20 @@ def flatten_kmer_dict(kmer_dict, kmer_sizes):
         flattened.update(current_dict)
     return flattened
 
+
 def kmer_dict_to_vector(kmer_dict, all_kmers):
     """
     Convert a k-mer dictionary to a vector based on all_kmers.
     """
     return [kmer_dict.get(kmer, 0) for kmer in all_kmers]
 
+
 def bin_numerical_attribute(df, column, bins=5):
     """
     Bin a numerical attribute into quantile-based bins.
     """
     return pd.qcut(df[column], q=bins, duplicates='drop').astype(str)
+
 
 def limit_categories(series, top_n):
     """
@@ -55,10 +59,12 @@ def limit_categories(series, top_n):
     top_categories = counts.nlargest(top_n).index
     return series.apply(lambda x: x if x in top_categories else 'Other')
 
+
 def generate_embedding_plots(
     embedding, feature_matrix_scaled, merged_df, hues, data_col, embedding_name,
     output_folder, all_kmers=None, categorical_hues=[], numerical_hues=[],
-    model_params={}, num_bins=5, feature_importances_folder=None, top_taxa=6, top_taxa_hues=[]):
+    model_params={}, num_bins=5, feature_importances_folder=None, top_taxa=6, top_taxa_hues=[],
+    exclude_other_na=False, axis_limits=None):
     """
     Generate plots with different hues on the same embedding.
 
@@ -78,21 +84,30 @@ def generate_embedding_plots(
         feature_importances_folder: str, path to save feature importance files
         top_taxa: int, number of top categories to keep for taxonomic levels
         top_taxa_hues: list of hues that correspond to taxonomic levels
+        exclude_other_na: bool, whether to exclude 'Other' and 'NA' groups
+        axis_limits: tuple, (x_min, x_max, y_min, y_max) to set consistent axes
     """
-    # Create output path
-    output_filename = f"{embedding_name.lower()}_{data_col}.pdf"
-    output_path = os.path.join(output_folder, output_filename)
+    # Use the full merged_df for reference
+    full_embedding = embedding  # Original embedding
 
+    # Update the number of hues
     num_hues = len(hues)
-    nrows = int(np.ceil(num_hues / 3))  # Adjusted to have up to 3 plots per row for better layout
+    nrows = int(np.ceil(num_hues / 3))  # Up to 3 plots per row
     ncols = min(num_hues, 3)
 
-    # Increase figure size for better visibility
+    # Initialize figure
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(8*ncols, 6*nrows), sharex=True, sharey=True)
     if num_hues == 1:
         axes = [axes]
     else:
-        axes = axes.flatten()  # Flatten in case of multiple rows
+        axes = axes.flatten()
+
+    # Determine axis limits if not provided
+    if axis_limits is None:
+        x_min, x_max = np.min(embedding[:, 0]), np.max(embedding[:, 0])
+        y_min, y_max = np.min(embedding[:, 1]), np.max(embedding[:, 1])
+        axis_limits = (x_min, x_max, y_min, y_max)
+        logging.info(f"Axis limits set to: {axis_limits}")
 
     for idx, hue in enumerate(hues):
         ax = axes[idx]
@@ -116,15 +131,23 @@ def generate_embedding_plots(
         else:
             hue_type_for_plot = hue_type
 
+        # Apply filtering if exclude_other_na is True
+        if exclude_other_na:
+            valid_mask = ~plot_metadata.isin(['Other', 'NA'])
+            plot_metadata = plot_metadata[valid_mask]
+            emb = full_embedding[valid_mask]
+            logging.info(f"Excluded 'Other' and 'NA' groups for hue '{hue}'.")
+        else:
+            emb = full_embedding
+
         # For model training, we need to handle missing values
-        valid_indices = ~metadata.isna()
-        # Prepare metadata for model training
-        metadata_model = metadata[valid_indices]
-        feature_matrix_valid = feature_matrix_scaled[valid_indices]
-        embedding_valid = embedding[valid_indices]
+        valid_indices_model = (~merged_df[hue].isna()) & (~merged_df[hue].isin(['Other', 'NA']))
+        metadata_model = merged_df[hue][valid_indices_model]
+        feature_matrix_valid = feature_matrix_scaled[valid_indices_model]
+        embedding_valid = full_embedding[valid_indices_model]
 
         # Proceed with model training and performance metrics
-        if valid_indices.sum() < 2:
+        if valid_indices_model.sum() < 2:
             logging.warning(f"Not enough valid samples for hue '{hue}'. Skipping.")
             performance_text = "Insufficient samples"
         else:
@@ -169,8 +192,8 @@ def generate_embedding_plots(
 
         # Plotting
         plot_df = pd.DataFrame({
-            f'{embedding_name}1': embedding[:, 0],
-            f'{embedding_name}2': embedding[:, 1],
+            f'{embedding_name}1': emb[:, 0],
+            f'{embedding_name}2': emb[:, 1],
             'Hue': plot_metadata
         })
 
@@ -187,7 +210,8 @@ def generate_embedding_plots(
                 custom_palette = sns.color_palette('Set1', n_colors=n_categories)
 
             color_dict = dict(zip(unique_categories, custom_palette))
-            color_dict['NA'] = (0.7, 0.7, 0.7)  # Grey color for NA values
+            if 'NA' in unique_categories:
+                color_dict['NA'] = (0.7, 0.7, 0.7)  # Grey color for NA values
 
             sns.scatterplot(
                 x=f'{embedding_name}1', y=f'{embedding_name}2',
@@ -222,19 +246,23 @@ def generate_embedding_plots(
             ax.text(0.5, 0.5, "Unknown hue type", transform=ax.transAxes, ha='center')
             ax.set_title(f"{hue}\n{performance_text}")
 
-        # Add axis labels
-        ax.set_xlabel(f"{embedding_name} 1")
-        ax.set_ylabel(f"{embedding_name} 2")
+        # Set consistent axis limits
+        ax.set_xlim(axis_limits[0], axis_limits[1])
+        ax.set_ylim(axis_limits[2], axis_limits[3])
 
     # Remove any empty subplots
     for idx in range(len(hues), nrows*ncols):
         fig.delaxes(axes[idx])
 
-    fig.suptitle(f"{embedding_name} plots for {data_col}", fontsize=20)
+    fig.suptitle(f"{embedding_name} plots for {data_col} {'(Excluding Other & NA)' if exclude_other_na else ''}", fontsize=20)
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])  # Adjust to accommodate suptitle
+    suffix = "_no_other_na" if exclude_other_na else ""
+    output_filename = f"{embedding_name.lower()}_{data_col}{suffix}.pdf"
+    output_path = os.path.join(output_folder, output_filename)
     plt.savefig(output_path, format='pdf', dpi=300)
     plt.close()
-    logging.info(f"{embedding_name} plots saved to {output_path}")
+    logging.info(f"{embedding_name} plots{' (excluding Other & NA)' if exclude_other_na else ''} saved to {output_path}")
+
 
 def main():
     # Configure logging
@@ -454,11 +482,15 @@ def main():
                 logging.error(f"t-SNE computation error for '{data_col}': {e}. Skipping t-SNE plots.")
                 tsne_embedding = None
 
+        umap_axis_limits = None
+        tsne_axis_limits = None
+
         # Combine categorical and numerical hues
         hues = categorical_hues + numerical_hues
 
         # Generate UMAP plots
         if umap_embedding is not None:
+            # First, generate the standard UMAP plots
             generate_embedding_plots(
                 embedding=umap_embedding,
                 feature_matrix_scaled=feature_matrix_scaled,
@@ -476,8 +508,35 @@ def main():
                 top_taxa_hues=top_taxa_hues
             )
 
+            # Capture axis limits from the first plot
+            if umap_axis_limits is None:
+                x_min, x_max = np.min(umap_embedding[:, 0]), np.max(umap_embedding[:, 0])
+                y_min, y_max = np.min(umap_embedding[:, 1]), np.max(umap_embedding[:, 1])
+                umap_axis_limits = (x_min, x_max, y_min, y_max)
+
+            # Then, generate the UMAP plots excluding 'Other' and 'NA'
+            generate_embedding_plots(
+                embedding=umap_embedding,
+                feature_matrix_scaled=feature_matrix_scaled,
+                merged_df=merged_df,
+                hues=hues,
+                data_col=data_col,
+                embedding_name='UMAP',
+                output_folder=args.output_folder,
+                all_kmers=all_kmers if data_col.endswith('_kmer') else None,
+                categorical_hues=categorical_hues,
+                numerical_hues=numerical_hues,
+                num_bins=args.num_bins,
+                feature_importances_folder=feature_importances_folder,
+                top_taxa=args.top_taxa,
+                top_taxa_hues=top_taxa_hues,
+                exclude_other_na=True,
+                axis_limits=umap_axis_limits
+            )
+
         # Generate t-SNE plots if embedding is available
         if tsne_embedding is not None:
+            # First, generate the standard t-SNE plots
             generate_embedding_plots(
                 embedding=tsne_embedding,
                 feature_matrix_scaled=feature_matrix_scaled,
@@ -495,7 +554,34 @@ def main():
                 top_taxa_hues=top_taxa_hues
             )
 
+            # Capture axis limits from the first plot
+            if tsne_axis_limits is None:
+                x_min, x_max = np.min(tsne_embedding[:, 0]), np.max(tsne_embedding[:, 0])
+                y_min, y_max = np.min(tsne_embedding[:, 1]), np.max(tsne_embedding[:, 1])
+                tsne_axis_limits = (x_min, x_max, y_min, y_max)
+
+            # Then, generate the t-SNE plots excluding 'Other' and 'NA'
+            generate_embedding_plots(
+                embedding=tsne_embedding,
+                feature_matrix_scaled=feature_matrix_scaled,
+                merged_df=merged_df,
+                hues=hues,
+                data_col=data_col,
+                embedding_name='t-SNE',
+                output_folder=args.output_folder,
+                all_kmers=all_kmers if data_col.endswith('_kmer') else None,
+                categorical_hues=categorical_hues,
+                numerical_hues=numerical_hues,
+                num_bins=args.num_bins,
+                feature_importances_folder=feature_importances_folder,
+                top_taxa=args.top_taxa,
+                top_taxa_hues=top_taxa_hues,
+                exclude_other_na=True,
+                axis_limits=tsne_axis_limits
+            )
+
     logging.info("Script execution completed.")
+
 
 if __name__ == "__main__":
     main()
