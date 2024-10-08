@@ -75,7 +75,8 @@ def process_json_file(json_file, k_list=[3]):
     leftflank_sequences = []
     rightflank_sequences = []
     spacer_sequences = []
-    
+    dr_sequences = []  # <-- Added for DR sequences
+
     # Collection for Leader FLANKs
     leader_flank_sequences = []
 
@@ -121,6 +122,7 @@ def process_json_file(json_file, k_list=[3]):
             dr_consensus = crispr.get('DR_Consensus', '')
             if dr_consensus:
                 dr_consensuses.append(dr_consensus)
+                dr_sequences.append(dr_consensus)  # <-- Collect DR consensus sequences
 
             # Collect k-mer sequences of LeftFLANK and RightFLANK
             regions = crispr.get('Regions', [])
@@ -136,6 +138,8 @@ def process_json_file(json_file, k_list=[3]):
                     rightflank_sequences.append(sequence_seq)
                 elif region_type == 'Spacer':
                     spacer_sequences.append(sequence_seq)
+                elif region_type == 'DR':  # <-- Handle DR regions
+                    dr_sequences.append(sequence_seq)  # <-- Collect DR region sequences
 
                 # Check if Leader is 1 at the region level
                 if region.get('Leader', 0) == 1:
@@ -245,6 +249,12 @@ def process_json_file(json_file, k_list=[3]):
         leader_flank_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(leader_flank_sequences, k)
     leader_flank_kmer_json = json.dumps(leader_flank_kmer_freqs)
 
+    # <-- Compute k-mer frequencies for DR sequences
+    dr_kmer_freqs = {}
+    for k in k_list:
+        dr_kmer_freqs[f'{k}-mer'] = get_kmer_frequencies(dr_sequences, k)
+    dr_kmer_json = json.dumps(dr_kmer_freqs)
+
     # Generate sample name by replacing .json with .fasta
     sample_name = os.path.basename(json_file).replace('.json', '.fasta')
 
@@ -271,7 +281,8 @@ def process_json_file(json_file, k_list=[3]):
         'spacer_kmer_frequencies': spacer_kmer_json,
         'leftflank_kmer_freq': leftflank_kmer_json,
         'rightflank_kmer_freq': rightflank_kmer_json,
-        'leader_flank_kmer_freq': leader_flank_kmer_json,  # New Column
+        'leader_flank_kmer_freq': leader_flank_kmer_json,  # Existing Column
+        'dr_kmer_frequencies': dr_kmer_json,  # <-- New Column
     }
 
     return summary
@@ -327,7 +338,7 @@ def main():
     parser.add_argument(
         "--output_file",
         required=True,
-        help="Output file path for the summary table (e.g., summary_table2.csv)."
+        help="Output file path for the summary table (e.g., summary_with_dr_kmers.csv)."
     )
     parser.add_argument(
         "--kmer_sizes",

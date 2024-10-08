@@ -343,6 +343,7 @@ def main():
         summary_df['left_kmer_dict'] = summary_df['leftflank_kmer_freq'].apply(safe_json_loads)
         summary_df['right_kmer_dict'] = summary_df['rightflank_kmer_freq'].apply(safe_json_loads)
         summary_df['spacer_kmer_dict'] = summary_df['spacer_kmer_frequencies'].apply(safe_json_loads)
+        summary_df['dr_kmer_dict'] = summary_df['dr_kmer_frequencies'].apply(safe_json_loads)
         summary_df['spacer_nuc_dist'] = summary_df['spacer_nucleotide_distribution'].apply(safe_json_loads)
         summary_df['dr_nuc_dist'] = summary_df['dr_nucleotide_distribution'].apply(safe_json_loads)
         logging.info("JSON columns parsed successfully.")
@@ -370,6 +371,7 @@ def main():
 
     # Define the data columns to process
     data_columns = {
+        'dr_kmer': 'Repeat k-mer',
         'leader_flank_kmer': 'Leader Flank k-mer',
         'left_kmer': 'Left Flank k-mer',
         'right_kmer': 'Right Flank k-mer',
